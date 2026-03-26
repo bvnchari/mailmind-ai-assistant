@@ -1,0 +1,8 @@
+streamlit
+langgraph
+langchain-openai
+langchain-anthropic
+fpdf
+python-dotenv
+python-docx
+pandas
