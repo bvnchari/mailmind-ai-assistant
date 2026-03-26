@@ -66,7 +66,6 @@ with tab1:
 
     if st.button("Generate ✨", type="primary"):
         if prompt and recipient:
-            # Create fresh thread for new generation
             st.session_state.thread_id = str(uuid.uuid4())
             initial_state = {"prompt": prompt, "tone": tone, "recipient": recipient, "is_mock": is_mock}
             final_state = mailmind_app.invoke(initial_state, get_config())
@@ -75,10 +74,8 @@ with tab1:
         else:
             st.warning("Please fill in the Recipient Name and Goal.")
 
-    # --- AGENTIC STATE CHECK ---
     current_state = mailmind_app.get_state(get_config())
     
-    # 1. Graph is waiting for Human Review (Interrupt)
     if current_state.next:
         draft = current_state.values.get("draft", "")
         st.subheader("📝 Review & Edit Draft")
@@ -98,7 +95,7 @@ with tab1:
                     mailmind_app.update_state(get_config(), {"draft": edited})
                     mailmind_app.invoke(None, get_config())
                     if is_mock:
-                        st.warning("MOCK MODE: No email actually sent.")
+                        st.warning("MOCK MODE: Not sent.")
                     else:
                         success, msg = send_real_email(email_to, mail_subject, edited)
                         if success: st.success("Email Sent!")
@@ -108,7 +105,6 @@ with tab1:
                 mailmind_app.invoke({"prompt": prompt, "tone": tone, "recipient": recipient, "is_mock": is_mock}, get_config())
                 st.rerun()
             
-    # 2. Graph is Finished (Display Final Results)
     elif "draft" in current_state.values and current_state.values.get("prompt"):
         st.subheader("🚀 Final Validated Draft")
         final_email = current_state.values["draft"]
@@ -129,9 +125,8 @@ with tab1:
             pdf = FPDF()
             pdf.add_page()
             pdf.set_font("Arial", size=12)
-            # Clean text for PDF compatibility
-            clean_pdf_text = final_email.encode('latin-1', 'replace').decode('latin-1')
-            pdf.multi_cell(0, 10, clean_pdf_text)
+            safe_text = final_email.encode('latin-1', 'replace').decode('latin-1')
+            pdf.multi_cell(0, 10, safe_text)
             st.download_button("📥 Download PDF", data=pdf.output(dest='S').encode('latin-1'), file_name="Email_Draft.pdf")
             
         with d_col3:
@@ -152,38 +147,72 @@ with tab2:
                 st.session_state.bulk_drafts = [] 
                 progress = st.progress(0)
                 for i, row in df.iterrows():
-                    bulk_thread = {"configurable": {"thread_id": f"bulk-{uuid.uuid4()}"}}
                     res = mailmind_app.invoke(
                         {"prompt": row['goal'], "tone": row['tone'], "recipient": row['recipient_name'], "is_mock": is_mock},
-                        bulk_thread
+                        {"configurable": {"thread_id": f"bulk-{uuid.uuid4()}"}}
                     )
                     st.session_state.bulk_drafts.append({
                         "email": row['recipient_email'], 
                         "name": row['recipient_name'], 
                         "subject": row['subject'],
-                        "draft": res.get("draft", "Error generating")
+                        "draft": res.get("draft", "Error generating draft")
                     })
                     progress.progress((i + 1) / len(df))
                 st.success(f"Generated {len(st.session_state.bulk_drafts)} drafts!")
 
         if st.session_state.bulk_drafts:
             st.divider()
+            st.subheader("📝 Review & Edit Bulk Drafts")
+            
+            # Use a loop to display and allow editing
             for idx, item in enumerate(st.session_state.bulk_drafts):
                 with st.expander(f"Review: {item['name']} - {item['subject']}"):
-                    item['subject'] = st.text_input("Subject:", value=item['subject'], key=f"bulk_subj_{idx}")
-                    item['draft'] = st.text_area("Body:", value=item['draft'], key=f"bulk_body_{idx}", height=200)
+                    # These updates sync directly to session_state
+                    st.session_state.bulk_drafts[idx]['subject'] = st.text_input(
+                        "Subject:", value=item['subject'], key=f"subj_{idx}"
+                    )
+                    st.session_state.bulk_drafts[idx]['draft'] = st.text_area(
+                        "Body:", value=item['draft'], key=f"body_{idx}", height=200
+                    )
 
-            b1, b2 = st.columns(2)
-            with b1:
+            col_b1, col_b2, col_b3 = st.columns(3)
+            with col_b1:
                 if st.button("🚀 Send All Now"):
-                    if is_mock: st.warning("Mock Mode: No mail sent.")
+                    if is_mock: 
+                        st.warning("MOCK MODE: No mail sent.")
                     else:
                         for item in st.session_state.bulk_drafts:
                             send_real_email(item['email'], item['subject'], item['draft'])
-                        st.success("All Emails Sent!")
-            with b2:
-                if st.button("🗑️ Clear Bulk Data"):
-                    st.session_state.bulk_drafts = []
-                    st.rerun()
-    else:
-        st.info("Upload a CSV file in the sidebar to use Bulk Processing.")
+                        st.success("All emails dispatched!")
+            
+            with col_b2:
+                # Word Export - Uses the edited session_state
+                doc = Document()
+                doc.add_heading('MailMind Bulk Export', 0)
+                for item in st.session_state.bulk_drafts:
+                    doc.add_heading(f"To: {item['name']} ({item['email']})", level=1)
+                    doc.add_paragraph(f"Subject: {item['subject']}")
+                    doc.add_paragraph(item['draft'])
+                    doc.add_page_break()
+                bio_word = io.BytesIO()
+                doc.save(bio_word)
+                st.download_button("📥 Download Word (.docx)", data=bio_word.getvalue(), file_name="Bulk_Emails.docx", key="dl_word_tab2")
+
+            with col_b3:
+                # PDF Export - Uses the edited session_state
+                pdf = FPDF()
+                pdf.set_auto_page_break(auto=True, margin=15)
+                for item in st.session_state.bulk_drafts:
+                    pdf.add_page()
+                    pdf.set_font("Arial", 'B', 14)
+                    pdf.cell(0, 10, f"To: {item['name']} ({item['email']})", ln=True)
+                    pdf.set_font("Arial", 'I', 12)
+                    pdf.cell(0, 10, f"Subject: {item['subject']}", ln=True)
+                    pdf.ln(5)
+                    pdf.set_font("Arial", size=12)
+                    safe_text = item['draft'].encode('latin-1', 'replace').decode('latin-1')
+                    pdf.multi_cell(0, 10, safe_text)
+                
+                pdf_bytes = pdf.output(dest='S').encode('latin-1')
+                st.download_button("📥 Download PDF (.pdf)", data=pdf_bytes, file_name="Bulk_Emails.pdf", key="dl_pdf_tab2")
+
